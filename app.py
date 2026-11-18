@@ -1,13 +1,15 @@
-"""게으름 탈출구 — Streamlit + Supabase, 한 가족용.
-실행: pip install -r requirements.txt && streamlit run app.py
-최초 실행 화면의 배포 안내에 SQL과 Secrets 예시가 있습니다.
-로그인 비밀번호와 Supabase 키는 GitHub 코드에 넣지 마세요.
+"""게으름 탈출구 | 실행: streamlit run app.py
+GitHub에는 app.py와 requirements.txt만 업로드하세요.
+Supabase SQL과 Streamlit Secrets 예시는 앱의 관리자 설정 안내에 있습니다.
+한 가족 전용 배포입니다. 가족 코드는 기록 공유용이며 비밀번호를 대신하지 않습니다.
 """
 import base64
+import calendar
 import copy
 import hashlib
 import hmac
 import json
+import secrets
 import uuid
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -15,48 +17,63 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 from supabase import create_client
 
-st.set_page_config(page_title="게으름 탈출구", page_icon="🚀", layout="wide")
-KST = ZoneInfo("Asia/Seoul")
-TODAY = datetime.now(KST).date()
-SQL = """-- Supabase > SQL Editor에서 한 번 실행하세요.
-create table if not exists public.family_planner (
+st.set_page_config(page_title="게으름 탈출구", page_icon="🌱", layout="wide")
+TODAY = datetime.now(ZoneInfo("Asia/Seoul")).date()
+DAYS = ["월", "화", "수", "목", "금", "토", "일"]
+SQL = '''create table if not exists public.family_planner (
   id text primary key,
   state jsonb not null default '{}'::jsonb,
   version bigint not null default 0
 );
 alter table public.family_planner enable row level security;
--- 공개 접근 정책을 만들지 않습니다. 서버의 service_role 키로만 접근합니다.
 revoke all on public.family_planner from anon, authenticated;
-insert into public.family_planner(id, state) values
-('home', '{"weeks": {}, "ledger": [], "goal": {"name": "나의 첫 저축", "amount": 100000}}'::jsonb)
-on conflict (id) do nothing;
-"""
-SECRETS = '''SUPABASE_URL = "https://YOUR_PROJECT.supabase.co"
+-- 공개 접근 정책은 만들지 않습니다. 서버 전용 service_role 키로 연결합니다.
+'''
+SECRET_EXAMPLE = '''SUPABASE_URL = "https://YOUR_PROJECT.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY = "서버 전용 service_role 키"
-FAMILY_ID = "home"
-CHILD_PASSWORD = "자녀용-긴-비밀번호를-정하세요"
+CHILD_PASSWORD = "자녀용-긴-비밀번호"
 PARENT_PASSWORD = "부모님만-아는-다른-긴-비밀번호"
 '''
+st.markdown("""<style>
+.stApp {background: #F7FAF8;}
+[data-testid="stMetric"] {background:white; padding:16px; border-radius:16px; border:1px solid #DBE8DF;}
+[data-testid="stSidebar"] {background:#EDF5EF;}
+</style>""", unsafe_allow_html=True)
 
 
-def guide():
-    st.title("🚀 게으름 탈출구")
-    st.write("작은 실천을 인증하고, 부모님의 응원을 모아 용돈과 저축으로 연결하세요.")
-    st.subheader("처음 한 번만 설정하면 됩니다")
-    st.markdown("""1. **비공개 GitHub 저장소**에 `app.py`, `requirements.txt` 두 파일을 올립니다.
-2. Supabase 프로젝트를 만들고 **SQL Editor**에서 아래 SQL을 실행합니다.
-3. Streamlit Community Cloud에서 GitHub 저장소와 `app.py`를 선택합니다.
-4. 배포 설정의 **Secrets**에 아래 설정을 입력합니다. 로컬 실행은 `.streamlit/secrets.toml`을 사용합니다.
-5. 부모님·자녀에게 같은 앱 주소를 공유하고 각자의 비밀번호를 알려주세요.
+def digest(value):
+    return hashlib.sha256(str(value).encode()).hexdigest()
 
-**한 가족 전용 앱입니다.** 가족마다 별도 배포를 권장합니다. Supabase에 데이터가 저장되므로
-Streamlit 재시작에도 기록이 유지됩니다. 부모님 비밀번호와 서버 키는 자녀에게 공유하지 마세요.
-미성년자의 인증 자료는 얼굴·학교·주소 등 개인정보가 드러나지 않도록 올려주세요.
-""")
-    st.code(SQL, language="sql")
-    st.code(SECRETS, language="toml")
-    st.info("실제 은행 송금 기능은 없습니다. 적립·지급·지출 내역을 기록하는 장부입니다. Supabase 이용 한도와 백업은 프로젝트 소유자가 관리합니다.")
 
+def signout():
+    st.session_state.clear()
+    st.rerun()
+
+
+def setup_guide():
+    with st.expander("⚙️ 관리자 설정 안내", expanded=False):
+        st.write("가족 기록과 사진을 공유하려면 Supabase 저장소를 연결하세요. 소개 화면은 설정 없이 볼 수 있습니다.")
+        st.markdown("1. Supabase에서 프로젝트를 만듭니다.\n2. SQL Editor에서 아래 SQL을 실행합니다.\n3. Streamlit 앱 설정 → Secrets에 연결 정보와 서로 다른 부모님·자녀 비밀번호를 입력합니다.")
+        st.code(SQL, language="sql")
+        st.code(SECRET_EXAMPLE, language="toml")
+        st.warning("서버 키와 비밀번호를 GitHub에 올리지 마세요. 한 가족마다 별도 앱 배포를 권장합니다. 코드는 가족끼리만 공유하세요.")
+        st.caption("기존 family_planner 테이블을 이미 만들었다면 그대로 사용할 수 있습니다. 이전 버전 기록은 자동 이전되지 않으며, 새 가족 코드를 만들면 새 기록으로 시작합니다.")
+
+
+if "entered" not in st.session_state:
+    st.title("🌱 게으름 탈출구")
+    st.subheader("오늘의 작은 실천을, 반짝이는 코인으로!")
+    st.write("부모님과 함께 주간 계획을 세우고, 숙제를 마친 사진을 올리는 생활 습관 앱이에요. 부모님이 확인하고 승인하면 코인이 차곡차곡 쌓여요.")
+    a, b, c = st.columns(3)
+    a.info("🔗 가족 코드\n\n코드를 만들어 부모님과 같은 공간에 들어가요.")
+    b.info("📅 계획과 인증\n\n요일별 계획을 세우고 카메라로 인증해요.")
+    c.info("🪙 승인과 코인\n\n부모님이 승인하면 약속한 코인을 받아요.")
+    if st.button("우리 가족 시작하기 →", type="primary", use_container_width=True):
+        st.session_state.entered = True
+        st.rerun()
+    st.caption("코인은 앱 안의 보상 점수입니다. 현금·용돈으로 자동 환전하거나 송금하지 않습니다.")
+    setup_guide()
+    st.stop()
 
 required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "CHILD_PASSWORD", "PARENT_PASSWORD"]
 try:
@@ -64,319 +81,303 @@ try:
 except Exception:
     configured = False
 if not configured:
-    guide()
+    st.title("🔗 우리 가족 공간 준비하기")
+    st.info("앱 소개는 준비됐어요! 가족 코드와 인증 기능을 사용하려면 관리자 설정을 먼저 완료해주세요.")
+    setup_guide()
+    if st.button("← 앱 소개로"):
+        signout()
     st.stop()
-if st.secrets["CHILD_PASSWORD"] == st.secrets["PARENT_PASSWORD"]:
-    st.error("부모님과 자녀의 비밀번호를 서로 다르게 설정하세요.")
+if str(st.secrets["CHILD_PASSWORD"]) == str(st.secrets["PARENT_PASSWORD"]):
+    st.error("Secrets에서 부모님과 자녀 비밀번호를 서로 다르게 설정해주세요.")
     st.stop()
-
-
-def digest(text):
-    return hashlib.sha256(str(text).encode()).hexdigest()
-
 
 if "role" not in st.session_state:
-    st.title("🚀 게으름 탈출구")
-    st.caption("이번 주의 나, 지난주보다 한 걸음 앞으로")
+    st.title("🔐 누가 들어왔나요?")
+    st.caption("가족 코드를 만들거나 입력하기 전에 본인의 역할로 로그인하세요.")
     with st.form("login"):
-        role_name = st.selectbox("누가 들어왔나요?", ["자녀", "부모님"])
+        role = st.radio("사용자", ["자녀", "부모님"], horizontal=True)
         password = st.text_input("비밀번호", type="password")
-        entered = st.form_submit_button("우리 가족 공간 들어가기", use_container_width=True)
-    if entered:
-        key = "PARENT_PASSWORD" if role_name == "부모님" else "CHILD_PASSWORD"
+        submit = st.form_submit_button("다음 →", type="primary", use_container_width=True)
+    if submit:
+        key = "PARENT_PASSWORD" if role == "부모님" else "CHILD_PASSWORD"
         if hmac.compare_digest(digest(password), digest(st.secrets[key])):
-            st.session_state.role = role_name
-            st.session_state.auth_digest = digest(st.secrets[key])
+            st.session_state.role = role
+            st.session_state.auth = digest(st.secrets[key])
             st.rerun()
         else:
             st.error("비밀번호를 확인해주세요.")
-    st.caption("가족 공용 비밀번호 방식입니다. 공용 기기에서는 반드시 로그아웃하세요.")
+    st.caption("부모님 비밀번호는 자녀에게 알려주지 마세요. 공용 기기에서는 로그아웃하세요.")
     st.stop()
 
-role = st.session_state.role
-parent = role == "부모님"
+parent = st.session_state.role == "부모님"
 key = "PARENT_PASSWORD" if parent else "CHILD_PASSWORD"
-if not hmac.compare_digest(st.session_state.get("auth_digest", ""), digest(st.secrets[key])):
-    st.session_state.clear()
-    st.rerun()
-
+if not hmac.compare_digest(st.session_state.get("auth", ""), digest(st.secrets[key])):
+    signout()
 try:
-    db = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_SERVICE_ROLE_KEY"])
-    family_id = str(st.secrets.get("FAMILY_ID", "home"))
-    rows = db.table("family_planner").select("state,version").eq("id", family_id).execute().data
+    db = create_client(str(st.secrets["SUPABASE_URL"]), str(st.secrets["SUPABASE_SERVICE_ROLE_KEY"]))
+except Exception:
+    st.error("저장소 연결 설정을 확인해주세요.")
+    st.stop()
+
+
+def family_key(code):
+    return "pair_" + digest(code)
+
+
+def load_family(code):
+    return db.table("family_planner").select("state,version").eq("id", family_key(code)).execute().data
+
+
+if "family_code" not in st.session_state:
+    st.title("🔗 가족 코드로 함께하기")
+    st.write("처음이라면 코드를 만들고, 부모님 또는 자녀에게 코드를 알려주세요. 이미 코드가 있다면 입력하세요.")
+    create_tab, join_tab = st.tabs(["✨ 코드 생성", "🔑 코드 입력"])
+    with create_tab:
+        st.info("생성한 코드는 따로 적어두세요. 다른 기기에서 같은 코드를 입력하면 가족 달력이 열립니다.")
+        if st.button("새 가족 코드 만들기", type="primary", use_container_width=True):
+            try:
+                code = secrets.token_hex(5).upper()
+                initial = {"schema": 2, "tasks": [], "created": datetime.now(ZoneInfo("Asia/Seoul")).isoformat()}
+                db.table("family_planner").insert({"id": family_key(code), "state": initial, "version": 0}).execute()
+                st.session_state.family_code = code
+                st.rerun()
+            except Exception:
+                st.error("코드를 만들지 못했습니다. Supabase SQL·연결 설정을 확인한 뒤 다시 시도해주세요.")
+    with join_tab:
+        with st.form("join"):
+            code = st.text_input("부모님 또는 자녀에게 받은 가족 코드", max_chars=20, placeholder="예: 12AB34CD56").strip().upper()
+            join = st.form_submit_button("가족 달력 열기 →", use_container_width=True)
+        if join:
+            if len(code) != 10 or any(ch not in "0123456789ABCDEF" for ch in code):
+                st.warning("10자리 영문·숫자 코드를 확인해주세요.")
+            else:
+                try:
+                    rows = load_family(code)
+                    if rows and rows[0]["state"].get("schema") == 2:
+                        st.session_state.family_code = code
+                        st.rerun()
+                    else:
+                        st.error("해당 가족 코드를 찾지 못했어요. 코드를 다시 확인해주세요.")
+                except Exception:
+                    st.error("코드를 확인하지 못했습니다. 저장소 연결을 확인해주세요.")
+    if st.button("로그아웃"):
+        signout()
+    st.stop()
+
+code = st.session_state.family_code
+try:
+    rows = load_family(code)
     if not rows:
-        st.error("가족 데이터가 없습니다. 초기 SQL과 FAMILY_ID 설정을 확인하세요.")
-        st.code(SQL, language="sql")
+        st.error("가족 기록이 없습니다. 다른 코드로 다시 입장해주세요.")
+        if st.button("코드 다시 입력"):
+            del st.session_state.family_code
+            st.rerun()
         st.stop()
     original = rows[0]
     state = copy.deepcopy(original["state"])
-    state.setdefault("weeks", {})
-    state.setdefault("ledger", [])
-    state.setdefault("goal", {"name": "나의 첫 저축", "amount": 100000})
+    if state.get("schema") != 2:
+        st.error("이 버전과 다른 형식의 가족 기록입니다. 새 가족 코드로 시작해주세요.")
+        st.stop()
+    tasks = state.setdefault("tasks", [])
 except Exception:
-    st.error("저장소에 연결하지 못했습니다. Supabase URL·서버 키·테이블 설정을 확인해주세요. 잠시 후 새로고침해도 좋습니다.")
+    st.error("가족 기록을 읽지 못했습니다. 연결 설정을 확인하고 새로고침해주세요.")
     st.stop()
 
 
 def save(message):
-    # 낙관적 잠금: 부모·자녀가 동시에 수정해도 다른 사람의 변경을 덮어쓰지 않습니다.
     if len(json.dumps(state).encode()) > 18_000_000:
-        st.error("가족 저장 용량(18MB)에 도달했습니다. 부모님이 이전 인증 파일을 정리해주세요.")
+        st.error("가족 데이터 용량이 가득 찼습니다. 부모님이 승인 완료된 사진을 정리해주세요.")
         st.stop()
     try:
-        changed = db.table("family_planner").update({"state": state, "version": original["version"] + 1}).eq("id", family_id).eq("version", original["version"]).execute().data
+        changed = db.table("family_planner").update({"state": state, "version": original["version"] + 1}).eq("id", family_key(code)).eq("version", original["version"]).execute().data
     except Exception:
-        st.error("저장하지 못했습니다. 연결 상태를 확인하고 다시 시도해주세요.")
+        st.error("저장하지 못했습니다. 잠시 후 다시 시도해주세요.")
         st.stop()
     if not changed:
-        st.warning("다른 가족이 먼저 수정했습니다. 새로고침 후 다시 시도해주세요. 이번 수정은 저장되지 않았습니다.")
+        st.warning("다른 가족이 먼저 수정했어요. ‘최신 기록 새로고침’을 누른 뒤 다시 시도해주세요. 이번 변경은 저장되지 않았습니다.")
         st.stop()
     st.session_state.notice = message
     st.rerun()
 
 
-def uid():
-    return uuid.uuid4().hex
+def coin_total(items):
+    return sum(int(t["coins"]) for t in items if t["status"] == "approved")
 
 
-def money(value):
-    return f"{int(value):,}원"
-
-
-def week_start(day):
-    return day - timedelta(days=day.weekday())
-
-
-def timestamp():
-    return datetime.now(KST).isoformat(timespec="seconds")
-
-
-def add_ledger(kind, amount, note, week=None):
-    state["ledger"].append({"id": uid(), "date": timestamp(), "kind": kind, "amount": int(amount), "note": note, "week": week})
-
-
-st.sidebar.title("🚀 게으름 탈출구")
-st.sidebar.write(f"**{role} 공간**")
-st.sidebar.caption("매주 월요일 ~ 일요일 · 한국 시간")
-if st.sidebar.button("🔄 최신 기록 불러오기", use_container_width=True):
+st.sidebar.title("🌱 게으름 탈출구")
+st.sidebar.write(f"**{st.session_state.role} 공간**")
+st.sidebar.markdown("#### 우리 가족 코드")
+st.sidebar.code(code, language=None)
+st.sidebar.caption("이 코드를 가족에게 알려주세요. 로그인 비밀번호도 별도로 필요합니다.")
+if st.sidebar.button("🔄 최신 기록 새로고침", use_container_width=True):
+    st.rerun()
+if st.sidebar.button("다른 가족 코드 입력", use_container_width=True):
+    del st.session_state.family_code
     st.rerun()
 if st.sidebar.button("로그아웃", use_container_width=True):
-    st.session_state.clear()
-    st.rerun()
-with st.sidebar.expander("이용 규칙"):
-    st.write("① 일정을 적고 부모님이 확정합니다. ② 인증을 올립니다. ③ 부모님이 승인합니다. ④ 일요일이 지난 뒤 모든 일이 승인되어 있으면 용돈을 적립합니다. 지급은 별도로 기록합니다.")
-    st.caption("확정 후 자녀는 일정 삭제·수정을 할 수 없습니다. 파일은 한 건당 1MB 이하이며 사진, PDF만 받습니다.")
+    signout()
+with st.sidebar.expander("사용 규칙과 개인정보"):
+    st.write("자녀가 계획을 올리면 부모님이 보상 코인과 계획을 확정합니다. 자녀가 인증을 제출하고 부모님이 승인하면 코인이 쌓입니다. 승인된 과제는 다시 적립되지 않습니다.")
+    st.write("사진은 가족 저장소에 보관됩니다. 얼굴·이름·학교·주소가 드러나지 않게 찍어주세요. 카메라 권한을 허용해야 촬영할 수 있으며, 사진 업로드로 대신할 수 있습니다.")
+    st.caption("사진 한 장당 최대 1MB, 가족 전체 데이터 약 18MB 제한. 사진을 지워도 승인과 코인 기록은 유지됩니다. 다른 사람의 새 기록은 자동 반영되지 않으므로 새로고침하세요.")
+
 if "notice" in st.session_state:
     st.success(st.session_state.pop("notice"))
+st.title("📅 우리 가족 실천 달력")
+a, b, c = st.columns(3)
+a.metric("🪙 모은 코인", f"{coin_total(tasks):,}")
+b.metric("승인 완료", f"{sum(t['status'] == 'approved' for t in tasks)}개")
+c.metric("부모님 확인 대기", f"{sum(t['status'] == 'pending' for t in tasks)}개")
 
-st.title("작심삼일 대신, 주간 완주 🚀")
-st.caption("완벽한 사람이 아니라, 약속을 끝까지 해내는 나를 응원해요.")
-weekly_tab, wallet_tab, help_tab = st.tabs(["📅 주간 도전", "🐷 용돈 & 저축", "📖 사용 안내"])
-
-with weekly_tab:
-    selected = st.date_input("확인할 주의 날짜", value=TODAY)
-    start = week_start(selected)
-    end = start + timedelta(days=6)
-    wk = start.isoformat()
-    week = state["weeks"].setdefault(wk, {"tasks": [], "locked": False, "reward": 10000, "paid": False})
-    tasks = week["tasks"]
-    done = sum(t["status"] == "approved" for t in tasks)
-    st.subheader(f"{start:%m/%d} ~ {end:%m/%d} 주간 도전")
-    a, b, c = st.columns(3)
-    a.metric("승인된 약속", f"{done} / {len(tasks)}")
-    b.metric("완주 보상", money(week["reward"]))
-    c.metric("주간 상태", "보상 적립 완료" if week["paid"] else "확정됨" if week["locked"] else "계획 중")
-    st.progress(done / len(tasks) if tasks else 0, text="부모님의 승인을 받아 완주 게이지를 채워보세요!")
-
-    if not week["locked"]:
-        with st.form(f"new_{wk}", clear_on_submit=True):
-            st.markdown("#### ✏️ 이번 주에 할 일")
-            title = st.text_input("할 일", max_chars=80, placeholder="예: 수요일 수학 문제집 3쪽 풀기")
-            due = st.date_input("실천 날짜", value=max(start, min(TODAY, end)), min_value=start, max_value=end, key=f"due_{wk}")
-            criterion = st.text_input("완료 기준", max_chars=200, placeholder="예: 풀이가 보이도록 사진 찍기")
-            if st.form_submit_button("약속 추가", use_container_width=True):
-                if not title.strip() or not criterion.strip():
-                    st.warning("할 일과 완료 기준을 모두 입력해주세요.")
-                elif len(tasks) >= 40:
-                    st.warning("한 주에는 최대 40개까지 등록할 수 있습니다.")
-                else:
-                    tasks.append({"id": uid(), "title": title.strip(), "due": due.isoformat(), "criterion": criterion.strip(), "status": "todo", "evidence": None, "feedback": ""})
-                    save("이번 주 약속을 추가했어요.")
-        if parent:
-            reward = st.number_input("이번 주 완주 용돈 (원)", min_value=0, max_value=1000000, value=int(week["reward"]), step=1000, key=f"reward_{wk}")
-            agree = st.checkbox("해야 할 일·완료 기준·용돈을 아이와 함께 확인했습니다.", key=f"agree_{wk}")
-            if st.button("🔒 이번 주 약속 확정", disabled=not tasks or not agree):
-                week["reward"] = int(reward)
-                week["locked"] = True
-                save("주간 약속을 확정했어요. 이제 인증을 올릴 수 있습니다!")
-        else:
-            st.info("계획을 다 적었으면 부모님께 확정을 요청하세요. 확정 전에는 인증할 수 없습니다.")
-
-    if not tasks:
-        st.info("작고 구체적인 약속 하나부터 시작해볼까요?")
-    labels = {"todo": "⬜ 시작 전", "pending": "🔎 확인 대기", "approved": "✅ 승인 완료", "retry": "💪 다시 도전"}
-    for task in sorted(tasks, key=lambda t: (t["due"], t["title"])):
+cal_tab, review_tab, coins_tab = st.tabs(["📅 달력과 숙제 인증", "✅ 부모님 승인", "🪙 코인 기록"])
+with cal_tab:
+    if "month" not in st.session_state:
+        st.session_state.month = TODAY.replace(day=1)
+    month = st.session_state.month
+    left, middle, right = st.columns([1, 3, 1])
+    with left:
+        if st.button("← 이전 달", use_container_width=True):
+            st.session_state.month = (month - timedelta(days=1)).replace(day=1)
+            st.rerun()
+    middle.subheader(f"{month.year}년 {month.month}월")
+    with right:
+        if st.button("다음 달 →", use_container_width=True):
+            st.session_state.month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
+            st.rerun()
+    st.caption("요일 아래 날짜를 누르면 그날의 계획과 인증 카메라가 나타나요. · 숫자 뒤 괄호는 등록한 계획 수예요.")
+    for col, dayname in zip(st.columns(7), DAYS):
+        col.markdown(f"**{dayname}**")
+    for week in calendar.Calendar(firstweekday=0).monthdatescalendar(month.year, month.month):
+        cols = st.columns(7)
+        for col, day in zip(cols, week):
+            count = sum(t["day"] == day.isoformat() for t in tasks)
+            label = f"{'● ' if day == TODAY else ''}{day.day}" + (f" ({count})" if count else "")
+            with col:
+                if st.button(label, key=f"day_{day}", disabled=day.month != month.month, use_container_width=True):
+                    st.session_state.selected_day = day
+                    st.rerun()
+    selected = st.session_state.get("selected_day", TODAY)
+    st.divider()
+    st.subheader(f"{selected:%Y년 %m월 %d일} ({DAYS[selected.weekday()]})")
+    selected = st.date_input("계획하거나 인증할 날짜", value=selected, key=f"pick_{selected.isoformat()}")
+    st.caption("한 주의 여러 요일을 차례로 선택해 주간 계획을 세워보세요.")
+    with st.expander("✏️ 이 날짜에 할 일 올리기", expanded=not any(t["day"] == selected.isoformat() for t in tasks)):
+        with st.form(f"task_form_{selected}", clear_on_submit=True):
+            title = st.text_input("할 일", max_chars=80, placeholder="예: 수학 숙제 3쪽 풀기")
+            criterion = st.text_input("완료 기준", max_chars=200, placeholder="예: 풀이가 보이는 사진 찍기")
+            submit_plan = st.form_submit_button("계획 올리기", type="primary")
+        if submit_plan:
+            if not title.strip() or not criterion.strip():
+                st.warning("할 일과 완료 기준을 입력해주세요.")
+            elif len(tasks) >= 300:
+                st.warning("가족 계획은 최대 300개까지 등록할 수 있습니다.")
+            else:
+                tasks.append({"id": uuid.uuid4().hex, "title": title.strip(), "criterion": criterion.strip(), "day": selected.isoformat(), "coins": 10, "locked": False, "status": "todo", "evidence": None, "note": "", "feedback": ""})
+                save("계획을 올렸어요! 부모님이 계획과 보상을 확정하면 인증할 수 있어요.")
+    daily = [t for t in tasks if t["day"] == selected.isoformat()]
+    if not daily:
+        st.info("아직 계획이 없어요. 이 날짜에 할 일을 올려보세요!")
+    status_names = {"todo": "실천 전", "pending": "부모님 확인 중", "retry": "다시 도전", "approved": "승인 완료"}
+    for task in daily:
         tid = task["id"]
-        with st.expander(f"{labels.get(task['status'], '⬜')} · {task['due'][5:]} · {task['title']}"):
-            st.write(f"**완료 기준:** {task['criterion']}")
+        with st.container(border=True):
+            st.markdown(f"#### {task['title']}")
+            st.write(f"완료 기준: {task['criterion']}")
+            st.caption(f"{status_names[task['status']]} · 보상 {task['coins']}코인 · {'계획 확정' if task['locked'] else '부모님 계획 확정 대기'}")
             if task.get("feedback"):
-                st.info(f"부모님 메시지: {task['feedback']}")
-            ev = task.get("evidence")
-            if ev:
-                st.write(f"**인증 메모:** {ev['note']}")
-                st.caption(f"제출 시각: {ev['at']}")
-                if ev.get("data"):
-                    raw = base64.b64decode(ev["data"])
-                    if ev["mime"] in ("image/png", "image/jpeg", "image/webp"):
-                        st.image(raw, width=300)
-                    st.download_button("인증 파일 보기 / 다운로드", raw, file_name=ev["name"], mime=ev["mime"], key=f"download_{tid}")
+                st.info(f"부모님 피드백: {task['feedback']}")
+            if parent and not task["locked"]:
+                reward = st.number_input("승인 시 받을 코인", min_value=1, max_value=10000, value=int(task["coins"]), key=f"reward_{tid}")
+                if st.button("계획과 보상 확정", key=f"lock_{tid}"):
+                    task["coins"] = int(reward)
+                    task["locked"] = True
+                    save("계획과 보상을 확정했어요.")
+            if not task["locked"] and st.button("이 계획 삭제", key=f"delete_{tid}"):
+                state["tasks"] = [t for t in tasks if t["id"] != tid]
+                save("계획을 삭제했어요.")
+            if task["status"] == "approved":
+                st.success(f"부모님 승인 완료! {task['coins']}코인이 쌓였어요. 🪙")
+            elif not parent and task["locked"] and task["status"] in ["todo", "retry"]:
+                source = st.radio("인증 방법", ["📷 카메라 촬영", "🖼️ 사진 선택"], horizontal=True, key=f"source_{tid}")
+                if source == "📷 카메라 촬영":
+                    image = st.camera_input("숙제 인증 카메라", key=f"camera_{tid}_{task['status']}")
                 else:
-                    st.caption("보관 용량 관리를 위해 인증 파일은 삭제되었습니다. 승인 기록과 메모는 유지됩니다.")
-            if not week["locked"]:
-                if st.button("이 약속 삭제", key=f"delete_{tid}"):
-                    week["tasks"] = [t for t in tasks if t["id"] != tid]
-                    save("약속을 삭제했어요.")
-            elif not parent and task["status"] in ("todo", "retry") and not week["paid"]:
-                with st.form(f"submit_{tid}"):
-                    note = st.text_area("어떻게 실천했나요?", max_chars=1000)
-                    upload = st.file_uploader("증거 사진 또는 PDF (1MB 이하)", type=["jpg", "jpeg", "png", "webp", "pdf"], key=f"upload_{tid}")
-                    if st.form_submit_button("🙋 부모님께 완료 확인 요청"):
-                        if date.fromisoformat(task["due"]) > TODAY:
-                            st.warning("실천 날짜가 된 뒤에 인증해주세요.")
-                        elif not note.strip() or upload is None:
-                            st.warning("인증 메모와 증거 파일을 모두 올려주세요.")
-                        elif upload.size > 1_000_000:
-                            st.warning("파일을 1MB 이하로 줄여주세요.")
-                        else:
-                            blob = upload.getvalue()
-                            # 확장자뿐 아니라 파일 시그니처도 검증합니다.
-                            mime = ("image/png" if blob.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg" if blob.startswith(b"\xff\xd8\xff") else "application/pdf" if blob.startswith(b"%PDF-") else "image/webp" if blob.startswith(b"RIFF") and blob[8:12] == b"WEBP" else None)
-                            if not mime:
-                                st.warning("정상적인 JPG, PNG, WEBP 또는 PDF 파일을 올려주세요.")
-                            else:
-                                task["evidence"] = {"note": note.strip(), "name": upload.name, "mime": mime, "data": base64.b64encode(blob).decode(), "at": timestamp()}
-                                task["status"] = "pending"
-                                task["feedback"] = ""
-                                save("인증을 보냈어요! 부모님의 확인을 기다려주세요.")
-            elif parent and task["status"] == "pending" and not week["paid"]:
-                feedback = st.text_input("응원 또는 재도전 이유", max_chars=300, key=f"feedback_{tid}")
+                    image = st.file_uploader("숙제 사진 선택", type=["jpg", "jpeg", "png"], key=f"upload_{tid}_{task['status']}")
+                st.markdown("### 숙제를 올려보세요!")
+                st.caption("촬영 전 브라우저의 카메라 사용을 허용해주세요. 카메라가 없다면 사진 선택을 이용하세요.")
+                note = st.text_input("오늘의 실천 한마디 (선택)", max_chars=300, key=f"note_{tid}")
+                if st.button("부모님께 인증 보내기", key=f"send_{tid}", type="primary"):
+                    if image is None:
+                        st.warning("사진을 먼저 촬영하거나 선택해주세요.")
+                    elif image.size > 1_000_000:
+                        st.warning("사진은 1MB 이하로 줄여주세요. 휴대폰 사진 크기를 낮춰 촬영할 수 있어요.")
+                    else:
+                        # Decode the image before saving so non-image content is rejected.
+                        from io import BytesIO
+                        from PIL import Image
+                        try:
+                            raw = image.getvalue()
+                            with Image.open(BytesIO(raw)) as check:
+                                check.verify()
+                            task["evidence"] = base64.b64encode(raw).decode()
+                            task["note"] = note.strip()
+                            task["status"] = "pending"
+                            save("부모님께 인증을 보냈어요! 승인되면 코인이 쌓여요.")
+                        except (OSError, ValueError, Image.DecompressionBombError):
+                            st.error("읽을 수 없는 사진입니다. JPG 또는 PNG 사진을 다시 선택해주세요.")
+            elif not parent and task["status"] == "pending":
+                st.info("부모님이 확인 중이에요. 승인되면 코인이 자동으로 반영돼요.")
+            elif parent and task["locked"] and task["status"] == "todo":
+                st.caption("자녀가 인증을 제출하면 ‘부모님 승인’ 탭에서 확인할 수 있어요.")
+
+with review_tab:
+    if not parent:
+        st.info("인증 승인과 코인 지급은 부모님으로 로그인해야 할 수 있어요.")
+    else:
+        pending = [t for t in tasks if t["status"] == "pending"]
+        st.subheader(f"확인할 숙제 {len(pending)}개")
+        if not pending:
+            st.success("지금은 확인할 숙제가 없어요.")
+        for task in pending:
+            tid = task["id"]
+            with st.container(border=True):
+                st.subheader(task["title"])
+                st.write(f"{task['day']} · 완료 기준: {task['criterion']}")
+                if task.get("evidence"):
+                    st.image(base64.b64decode(task["evidence"]), caption="자녀가 제출한 인증 사진", width=450)
+                st.write(task.get("note") or "인증 메모 없음")
+                feedback = st.text_input("응원 또는 재도전 피드백", max_chars=300, key=f"feedback_{tid}")
                 yes, no = st.columns(2)
-                if yes.button("✅ 실천 승인", key=f"yes_{tid}", use_container_width=True):
+                if yes.button(f"✅ 승인하고 {task['coins']}코인 쌓기", key=f"approve_{tid}", type="primary", use_container_width=True):
                     task["status"] = "approved"
-                    task["feedback"] = feedback.strip() or "약속을 지켰구나. 멋져!"
-                    save("실천을 승인했어요.")
-                if no.button("💪 재도전 요청", key=f"no_{tid}", use_container_width=True):
+                    task["feedback"] = feedback.strip()
+                    task["approved_at"] = datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
+                    save(f"승인 완료! {task['coins']}코인이 적립됐어요.")
+                if no.button("↩️ 다시 도전하기", key=f"retry_{tid}", use_container_width=True):
                     if not feedback.strip():
-                        st.warning("다시 도전할 수 있도록 이유를 적어주세요.")
+                        st.warning("어떤 부분을 보완하면 좋을지 알려주세요.")
                     else:
                         task["status"] = "retry"
                         task["feedback"] = feedback.strip()
-                        save("재도전 메시지를 보냈어요.")
-            if parent and task["status"] == "approved" and not week["paid"]:
-                if st.button("승인 취소 · 재확인", key=f"undo_{tid}"):
-                    task["status"] = "pending"
-                    save("승인을 취소했습니다. 다시 확인해주세요.")
+                        task["evidence"] = None
+                        save("재도전 피드백을 보냈어요.")
+        with st.expander("저장 공간 관리: 승인된 사진 지우기"):
+            st.caption("인증 사진만 지우며 계획·승인·적립 코인은 유지됩니다. 삭제한 사진은 복구할 수 없습니다.")
+            agree = st.checkbox("승인된 사진을 모두 영구 삭제하는 데 동의합니다.")
+            if st.button("승인된 사진만 삭제", disabled=not agree):
+                for task in tasks:
+                    if task["status"] == "approved":
+                        task["evidence"] = None
+                save("승인된 사진을 정리했어요. 코인과 승인 기록은 유지돼요.")
 
-    perfect = bool(tasks) and done == len(tasks) and week["locked"]
-    if perfect:
-        st.success("🏆 이번 주 약속을 모두 해냈어요! 정말 멋져요.")
-    if parent and not week["paid"]:
-        if TODAY <= end:
-            st.caption("완주 용돈은 해당 주의 일요일이 지난 뒤 적립할 수 있습니다.")
-        if st.button("🎁 완주 용돈 적립", disabled=not perfect or TODAY <= end):
-            week["paid"] = True
-            add_ledger("earned", week["reward"], f"{wk} 주간 완주 보상", wk)
-            save("완주 용돈을 적립했어요. 실제 지급은 용돈 탭에서 기록하세요.")
-    if parent and not week["paid"] and week["locked"]:
-        with st.expander("부모님: 계획 수정이 필요한 경우"):
-            st.warning("확정을 풀면 추가·삭제가 가능해집니다. 기존 인증과 승인은 유지됩니다. 아이와 합의한 경우에만 사용하세요.")
-            unlock = st.checkbox("아이와 계획 변경을 합의했습니다.", key=f"unlock_check_{wk}")
-            if st.button("약속 확정 해제", disabled=not unlock):
-                week["locked"] = False
-                save("계획 수정을 위해 확정을 풀었습니다.")
-
-with wallet_tab:
-    ledger = state["ledger"]
-    earned = sum(x["amount"] for x in ledger if x["kind"] == "earned")
-    received = sum(x["amount"] for x in ledger if x["kind"] == "received")
-    spent = sum(x["amount"] for x in ledger if x["kind"] == "spent")
-    pending = earned - received
-    balance = received - spent
-    a, b, c = st.columns(3)
-    a.metric("아직 받을 용돈", money(pending))
-    b.metric("남은 용돈 · 저축 잔액", money(balance))
-    c.metric("누적 완주 보상", money(earned))
-    st.caption("저축 잔액 = 실제로 받았다고 기록한 용돈 − 지출. 은행 잔액과 자동 연동되지 않습니다.")
-    goal = state["goal"]
-    st.subheader(f"🎯 {goal['name']}")
-    st.progress(min(1.0, max(0.0, balance / max(1, goal["amount"]))), text=f"{money(balance)} / {money(goal['amount'])}")
-    with st.expander("저축 목표 정하기"):
-        with st.form("goal"):
-            name = st.text_input("목표 이름", value=goal["name"], max_chars=60)
-            amount = st.number_input("목표 금액 (원)", min_value=1000, max_value=100000000, value=int(goal["amount"]), step=1000)
-            if st.form_submit_button("목표 저장"):
-                if name.strip():
-                    state["goal"] = {"name": name.strip(), "amount": int(amount)}
-                    save("저축 목표를 저장했어요.")
-                else:
-                    st.warning("목표 이름을 적어주세요.")
-    if parent:
-        with st.form("payout"):
-            st.markdown("#### 💸 실제 용돈 지급 기록")
-            payout = st.number_input("지급한 금액 (원)", min_value=0, max_value=max(0, pending), value=0, step=100)
-            if st.form_submit_button("지급 완료 기록", disabled=pending <= 0):
-                if payout > 0:
-                    add_ledger("received", payout, "부모님이 실제 지급 확인")
-                    save("실제 지급 기록을 남겼어요.")
-                else:
-                    st.warning("지급 금액을 입력해주세요.")
-    with st.form("expense", clear_on_submit=True):
-        st.markdown("#### 🧾 사용한 돈 기록")
-        reason = st.text_input("어디에 썼나요?", max_chars=100)
-        cost = st.number_input("사용 금액 (원)", min_value=0, max_value=max(0, balance), value=0, step=100)
-        if st.form_submit_button("지출 기록", disabled=balance <= 0):
-            if reason.strip() and cost > 0:
-                add_ledger("spent", cost, reason.strip())
-                save("지출을 기록했어요.")
-            else:
-                st.warning("사용처와 금액을 입력해주세요.")
-    st.subheader("용돈 히스토리")
-    kind_names = {"earned": "🏆 완주 적립", "received": "💸 실제 지급", "spent": "🧾 지출"}
-    if ledger:
-        st.dataframe([{"날짜": x["date"][:10], "유형": kind_names[x["kind"]], "금액(원)": x["amount"], "내용": x["note"]} for x in reversed(ledger)], hide_index=True, use_container_width=True)
-    else:
-        st.info("첫 완주 보상을 향해 출발해볼까요?")
-
-with help_tab:
-    st.markdown("""### 한 주의 작은 약속이 용돈이 되기까지
-1. **계획**: 아이가 한 주의 할 일과 완료 기준을 정합니다.
-2. **합의**: 부모님이 용돈 금액을 정하고 주간 계획을 확정합니다.
-3. **실천**: 실천 날짜부터 인증 메모와 사진 또는 PDF를 제출합니다.
-4. **확인**: 부모님이 승인하거나 이유와 함께 재도전을 요청합니다.
-5. **보상**: 일요일이 지난 뒤 그 주의 할 일이 하나 이상이고 모두 승인되면 부모님이 한 번만 용돈을 적립합니다.
-6. **저축**: 실제 지급을 기록하고, 지출을 뺀 나머지를 저축 목표로 모읍니다.
-
-인증·승인은 주가 끝난 뒤에도 가능합니다. 늦게 마무리한 과제의 인정 여부는 부모님이 판단합니다.
-보상을 적립한 주는 변경할 수 없습니다. 확정한 약속을 바꾸려면 적립 전에 부모님이 확정을 해제하세요.
-
-**안전 안내**: 인증 사진에 얼굴, 이름표, 학교, 주소가 드러나지 않도록 해주세요.
-인증 자료는 가족용 Supabase 저장소에 보관됩니다. 운영자는 Supabase에서 기록을 관리·삭제할 수 있습니다.
-이 앱은 소규모 한 가족용이며, 공개 회원가입·다중 가족 서비스용으로 설계되지 않았습니다.
-""")
-    if parent:
-        with st.expander("백업과 인증 파일 정리"):
-            st.download_button("가족 기록 백업 (인증 포함 JSON)", json.dumps(state, ensure_ascii=False, indent=2), "family_backup.json", "application/json")
-            st.caption("백업에는 개인정보와 인증 사진이 포함됩니다. 비공개로 보관하세요. 앱 내 복원 기능은 없으며 관리자 복원이 필요합니다.")
-            cutoff = TODAY - timedelta(days=90)
-            remove_ok = st.checkbox("90일이 지난 보상 적립 완료 주의 인증 파일을 삭제합니다. 메모와 장부는 유지됩니다.")
-            if st.button("오래된 인증 파일 삭제", disabled=not remove_ok):
-                count = 0
-                for key_week, old_week in state["weeks"].items():
-                    if date.fromisoformat(key_week) + timedelta(days=6) < cutoff and old_week["paid"]:
-                        for t in old_week["tasks"]:
-                            if t.get("evidence", {}).get("data") if t.get("evidence") else False:
-                                t["evidence"]["data"] = None
-                                count += 1
-                save(f"오래된 인증 파일 {count}개를 삭제했습니다.")
-        with st.expander("배포 설정 안내"):
-            guide()
+with coins_tab:
+    st.subheader("🪙 나의 실천이 쌓인 코인")
+    st.metric("누적 적립 코인", f"{coin_total(tasks):,}")
+    st.caption("부모님이 승인한 숙제만 적립돼요. 같은 숙제는 한 번만 적립됩니다. 현재 코인은 소비·현금 전환 없는 누적 보상 점수입니다.")
+    approved = sorted([t for t in tasks if t["status"] == "approved"], key=lambda t: t.get("approved_at", ""), reverse=True)
+    if not approved:
+        st.info("첫 인증 승인을 받고 첫 코인을 모아보세요!")
+    for task in approved:
+        with st.container(border=True):
+            st.write(f"🪙 +{task['coins']} · {task['title']}")
+            st.caption(f"계획 날짜 {task['day']} · 승인 {task.get('approved_at', '')[:10]}")
